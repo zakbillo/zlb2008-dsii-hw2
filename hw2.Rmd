@@ -13,6 +13,7 @@ library(pdp)
 library(earth)
 library(tidyverse)
 library(ggplot2)
+library(caret)
 
 knitr::opts_chunk$set(
   fig.width = 8,
@@ -37,8 +38,9 @@ Initialize Data
 ```{r}
 college <- read.csv("data/College.csv",  na = c("NA", ".", "")) |>
   janitor::clean_names() |>
-  mutate(college = as.factor(college)) |>
-  mutate(across(-college, as.numeric))
+  select(-college) |>
+  select(outstate, everything()) |>
+  mutate(across(everything(), as.numeric))
 
 summary(college) # check overall structure
 
@@ -47,7 +49,7 @@ college$grad_rate[college$grad_rate > 100] <- 100
 college <- na.omit(college)
 
 # matrix of predictors
-x <- model.matrix(outstate ~ ., college)[, -9]
+x <- model.matrix(outstate ~ ., college)[, -1]
 # vector of response
 y <- college$outstate
 
@@ -60,8 +62,7 @@ theme1$plot.line$lwd <- 2
 theme1$strip.background$col <- rgb(.0, .2, .6, .2)
 # Set the modified parameters as the global style for the trellis graph
 trellis.par.set(theme1)
-# `college` was not included in the plot (categorical variable)
-featurePlot(x[, -c(1:564)], y, plot = "scatter", labels = c("", "Y"),
+featurePlot(x, y, plot = "scatter", labels = c("", "Y"),
 type = c("p"), layout = c(3, 2))
 ```
 Partition the dataset into two parts: training data (80%) and test data (20%).
@@ -98,7 +99,7 @@ plot(x, y,
      xlab = "top10perc (%)",
      ylab = "outstate ($)")
 
-lines(predict(fit3), col = "blue", lwd = 2)
+lines(predict(fit3), col = "black", lwd = 2)
 lines(predict(fit5), col = "green", lwd = 2)
 lines(predict(fit7), col = "orange", lwd = 2)
 lines(predict(fit10), col = "red", lwd = 2)
@@ -106,15 +107,149 @@ lines(predict(fit_opt), col = "purple", lwd = 2)
 
 legend("topleft",
        legend = c("df=3","df=5","df=7","df=10", "df=4.39"),
-       col = c("blue","green","orange","red"),
+       col = c("black","green","orange","red", "purple"),
        lwd = 2)
 ```
 
+As the df increases from 3 to 10, the natural spline gets more flexible, resulting in overfitting. As determined by the optimal smoothing spline, the appropriate degree of freedom was 4.39 (generalized cross-validation is used to select the degree of freedom or the trace of the smoother matrix).
 
 (b) Train a multivariate adaptive regression spline (MARS) model to predict the response variable. Report the regression function. Present the partial dependence plot of an arbitrary predictor in your model. Report the test error.
 
+```{r}
+set.seed(123)
+
+# matrix of predictors
+x <- model.matrix(outstate ~ ., train_data)[, -1]
+# vector of response
+y <- train_data$outstate
+
+ctrl1 <- trainControl(method = "cv", number = 10) # 10-fold cv
+
+mars_grid <- expand.grid(degree = 1:3, nprune = 2:15)
+
+mars.fit <- train(x, y,
+  method = "earth",
+  tuneGrid = mars_grid,
+  trControl = ctrl1)
+  ggplot(mars.fit)
+```
+
+Let's try to get a sense of the selected hyperparameters
+
+```{r}
+mars.fit$bestTune # nprune = 14, df = 1
+```
+```{r}
+coef(mars.fit$finalModel)
+print(mars.fit$finalModel)
+```
+The regression function is $$\begin{aligned}
+\hat{y} &= 12974.7011817 \\
+&\quad - 0.7523615 \cdot h(\text{expend} - 15954) \\
+&\quad - 25.1664857 \cdot h(85 - \text{grad\_rate}) \\
+&\quad - 1.3090278 \cdot h(4440 - \text{room\_board}) \\
+&\quad - 1.0904120 \cdot h(\text{f\_undergrad} - 1365) \\
+&\quad - 2.2469701 \cdot h(1365 - \text{f\_undergrad}) \\
+&\quad - 83.5697756 \cdot h(22 - \text{perc\_alumni}) \\
+&\quad + 0.3613673 \cdot h(\text{apps} - 1377) \\
+&\quad - 2.9673230 \cdot h(\text{enroll} - 213) \\
+&\quad + 13.5624272 \cdot h(213 - \text{enroll}) \\
+&\quad + 0.7449182 \cdot h(\text{expend} - 6951) \\
+&\quad + 1.1719119 \cdot h(\text{f\_undergrad} - 2993) \\
+&\quad + 0.4147319 \cdot h(\text{accept} - 1540) \\
+&\quad - 1.8564357 \cdot h(1540 - \text{accept})
+\end{aligned}$$
+```{r}
+p1 <- pdp::partial(mars.fit, pred.var = "enroll", grid.resolution = 10) |> 
+  pdp::plotPartial()
+
+p1
+```
+This is the partial dependence plot on the estimated response variable with the predictor `enroll`. Increasing enrollment decreases the predicted out of state tuition. 
+```{r}
+mars_preds <- as.numeric(predict(mars.fit, newdata = test_data))
+test_mse <- mean((test_data$outstate - mars_preds)^2, na.rm = TRUE) 
+print(paste("MARS Test MSE:", round(test_mse, 2)))
+print(mars.fit$finalModel)
+```
+The MARS test MSE on the response variable `outstate` was 2,589,498.05. MARS selected 14 of 30 terms, and 8 of 16 predictors (nprune=14).
+
 (c) Construct a generalized additive model (GAM) to predict the response variable. For the nonlinear terms included in your model, generate plots to visualize these relationships and discuss your observations. Report the test error.
+
+```{r}
+set.seed(123)
+
+gam.mod <- gam(
+  outstate ~ s(apps) + s(accept) + s(enroll) + s(top10perc) + s(top25perc) +
+    s(f_undergrad) + s(p_undergrad) + s(room_board) + s(books) +
+    s(personal) + s(ph_d) + s(terminal) + s(s_f_ratio) +
+    s(perc_alumni) + s(expend) + s(grad_rate),
+  data = train_data
+)
+
+# Model summary
+gam_sum <- summary(gam.mod)
+
+# Find smooth terms (edf > 1)
+nonlinear_idx <- which(gam_sum$s.table[, "edf"] > 1.001)
+
+# See the smooth terms 
+rownames(gam_sum$s.table)[nonlinear_idx]
+```
+The smooth or nonlinear terms are `apps`, `accept`, `f_undergrad`, `room_board`, `books`, `personal`, `ph_d`, `terminal`, `s_f_ratio`, `perc_alumni`, and `expend`. 
+```{r}
+# Plot only nonlinear / smooth terms
+par(mfrow = c(3, 4))
+for (i in nonlinear_idx) {
+  plot(gam.mod,
+       select = i,
+       shade = TRUE,
+       seWithMean = TRUE)
+}
+```
+The terms `apps`, `accept`, `f_undergrad`, `room_board`, `ph_d`, `s_f_ratio`, `perc_alumni`, and `expend` have the most nonlinear relationships with the response variable `outstate`. 
+
+```{r}
+set.seed(123)
+
+# MSE
+gam.pred = predict(gam.mod, newdata = test_data)
+y2 = test_data$outstate
+mean((y2 - gam.pred)^2)
+```
+The test MSE for the GAM model is 2,298,158.
 
 (d) In this dataset, would you favor a MARS model over a linear model for predicting out-ofstate tuition? Provide a clear justification for your choice.
 
+```{r}
+set.seed(123)
+
+lm.fit <- train(
+  outstate ~ .,
+  train_data,
+  method = "lm",
+  trControl = ctrl1
+)
+
+# compare cross-validated results
+resamp <- resamples(list(
+  mars = mars.fit,
+  lm   = lm.fit
+))
+
+summary(resamp)
+
+# boxplot of RMSE
+bwplot(resamp, metric = "RMSE")
+```
+```{r}
+# evaluate the test MSE for linear model
+lm.pred <- predict(lm.fit, newdata = test_data)
+lm_mse <- mean((test_data$outstate - lm.pred)^2)
+print(paste("Linear Model Test MSE:", round(lm_mse, 2)))
+```
+In this data I would favor the multivariate adaptive regression spline (MARS) model. The linear model has a test MSE of 3,318,588.69 compared to the MARS's test MSE of 2,589,498.05. The fact that the linear model performs worse on the testing (and training data makes sense); the MARS model can account for more nonlinearity in the relationship between the response variable `outstate` and the predictors. 
+
 (e) In practical applications, would you consider a MARS model to be superior to a linear model, or the other way around? Please justify your answer with appropriate reasoning.
+
+If it is unjustified to believe that there is nonlinearity in the relationship between the response variable and the predictors, or if the linear model provides similar test error, a linear model is probably the better choice on the basis of interpretability. The multivariate adaptive regression spline (MARS) model is more helpful when the the data show curvature or threshold effects, because MARS models build a piecewise linear model using hinge basis functions and will automatically capture nonlinear predictor-response relationships.
