@@ -1,0 +1,120 @@
+---
+title: "Homework 2"
+author: "Zakari L. Billo"
+date: "2026-03-15"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(tidymodels)
+library(splines)
+library(mgcv)
+library(pdp)
+library(earth)
+library(tidyverse)
+library(ggplot2)
+
+knitr::opts_chunk$set(
+  fig.width = 8,
+  fig.height = 7,
+  fig.align = "center",
+  out.width = "90%"
+)
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+```
+
+Initialize Data
+
+```{r}
+college <- read.csv("data/College.csv",  na = c("NA", ".", "")) |>
+  janitor::clean_names() |>
+  mutate(college = as.factor(college)) |>
+  mutate(across(-college, as.numeric))
+
+summary(college) # check overall structure
+
+# we should cap graduation rate at 100%
+college$grad_rate[college$grad_rate > 100] <- 100
+college <- na.omit(college)
+
+# matrix of predictors
+x <- model.matrix(outstate ~ ., college)[, -9]
+# vector of response
+y <- college$outstate
+
+# Get the image parameters of the current trellis graph
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col <- rgb(.2, .4, .2, .5)
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <- rgb(.8, .1, .1, 1)
+theme1$plot.line$lwd <- 2
+theme1$strip.background$col <- rgb(.0, .2, .6, .2)
+# Set the modified parameters as the global style for the trellis graph
+trellis.par.set(theme1)
+# `college` was not included in the plot (categorical variable)
+featurePlot(x[, -c(1:564)], y, plot = "scatter", labels = c("", "Y"),
+type = c("p"), layout = c(3, 2))
+```
+Partition the dataset into two parts: training data (80%) and test data (20%).
+
+```{r}
+set.seed(123) # make this reproducible 
+data_split <- initial_split(college, prop = 0.8)
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+```
+
+(a) Fit smoothing spline models to predict out-of-state tuition (Outstate) using Top10perc as the only predictor, across a range of degrees of freedom. Plot the fitted curve for each degree of freedom. Describe the patterns you observe as the degrees of freedom change. Choose an appropriate degree of freedom for the model and plot this optimal fit. State the
+criteria you used to select the degree of freedom.
+
+```{r}
+set.seed(123)
+pred.grid <- seq(from = -20, to = 120, by = 1)
+
+# predictor and response matrices
+x <- train_data$top10perc
+y <- train_data$outstate
+
+# smoothing splines with different df
+fit3  <- smooth.spline(x, y, df = 3)
+fit5  <- smooth.spline(x, y, df = 5)
+fit7  <- smooth.spline(x, y, df = 7)
+fit10 <- smooth.spline(x, y, df = 10)
+fit_opt <- smooth.spline(x, y)
+fit_opt$df # optimal df is 4.394647
+
+plot(x, y,
+     col = "grey",
+     pch = 16,
+     xlab = "top10perc (%)",
+     ylab = "outstate ($)")
+
+lines(predict(fit3), col = "blue", lwd = 2)
+lines(predict(fit5), col = "green", lwd = 2)
+lines(predict(fit7), col = "orange", lwd = 2)
+lines(predict(fit10), col = "red", lwd = 2)
+lines(predict(fit_opt), col = "purple", lwd = 2)
+
+legend("topleft",
+       legend = c("df=3","df=5","df=7","df=10", "df=4.39"),
+       col = c("blue","green","orange","red"),
+       lwd = 2)
+```
+
+
+(b) Train a multivariate adaptive regression spline (MARS) model to predict the response variable. Report the regression function. Present the partial dependence plot of an arbitrary predictor in your model. Report the test error.
+
+(c) Construct a generalized additive model (GAM) to predict the response variable. For the nonlinear terms included in your model, generate plots to visualize these relationships and discuss your observations. Report the test error.
+
+(d) In this dataset, would you favor a MARS model over a linear model for predicting out-ofstate tuition? Provide a clear justification for your choice.
+
+(e) In practical applications, would you consider a MARS model to be superior to a linear model, or the other way around? Please justify your answer with appropriate reasoning.
